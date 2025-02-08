@@ -1,0 +1,11 @@
+catboost
+lightgbm
+mlflow
+numpy
+pandas
+scikit_learn
+xgboost
+mage-ai 
+gradio 
+huggingface_hub 
+joblib 
