@@ -1,6 +1,5 @@
-catboost
-lightgbm
-mlflow
+flask
+scikit-learn
 numpy
 pandas
 scikit_learn
@@ -9,3 +8,4 @@ mage-ai
 gradio 
 huggingface_hub 
 joblib 
+gradio

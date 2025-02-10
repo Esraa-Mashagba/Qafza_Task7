@@ -1,69 +1,110 @@
-# Install necessary libraries
-import pandas as pd
-import numpy as np
 import joblib
 import gradio as gr
-from huggingface_hub import HfApi, login
+import pandas as pd
+import numpy as np
+from flask import Flask, request, jsonify
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
-import mage_ai
-from mage_ai.data_preparation.decorators import data_loader, transformer, model_trainer, model_saver
-from mage_ai.data_preparation.models.pipeline import Pipeline
-import pickle
-import os
-from flask import Flask, request, jsonify
+from huggingface_hub import login, HfApi
 
-# # Create a Mage.ai pipeline
-# pipeline = Pipeline.create(
-#     name='house_price_prediction',
-#     repo_path='./mage_repo'
-# )
+# --- Data Ingestion ---
+def load_data():
+    print("Loading datasets...")
+    train = pd.read_csv('train.csv')
+    test = pd.read_csv('test.csv')
+    return train, test
 
+# --- Data Preprocessing ---
+def preprocess_data(train, test):
+    drop_columns = ['Id', 'LowQualFinSF', 'MiscVal', 'BsmtHalfBath', 'BsmtFinSF2']
+    train.drop(columns=drop_columns, inplace=True, errors='ignore')
+    test.drop(columns=drop_columns, inplace=True, errors='ignore')
 
-model = joblib.load('house_price_model.pkl')
+    # Handle Missing Data
+    print("Handling missing data...")
+    Data = pd.concat((train.drop(columns=['SalePrice']), test)).reset_index(drop=True)
+    Target = train['SalePrice']
+    
+    # Fill missing values
+    categorical_cols = Data.select_dtypes(exclude=[np.number]).columns
+    for col in categorical_cols:
+       Data[col] = Data[col].fillna(Data[col].mode()[0])
 
-# --- Hugging Face Upload ---
-login(token="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")  # Replace with your token
-api = HfApi()
-api.upload_file(
-    path_or_fileobj=model,
-    path_in_repo=model,
-    repo_id="EsrMash/Qafza_Task",
-    repo_type="space"
-)
+    Data = pd.get_dummies(Data, drop_first=True)
 
+    ntrain = train.shape[0]
+    return Data, Target, ntrain
 
-def predict_price(OverallQual, GrLivArea, GarageCars, TotalBsmtSF, FullBath, YearBuilt, YearRemodAdd, Fireplaces, LotArea, MasVnrArea):
-    input_data = pd.DataFrame([[OverallQual, GrLivArea, GarageCars, TotalBsmtSF, FullBath,
-                                YearBuilt, YearRemodAdd, Fireplaces, LotArea, MasVnrArea]],
-                              columns=['OverallQual', 'GrLivArea', 'GarageCars', 'TotalBsmtSF', 'FullBath',
-                                       'YearBuilt', 'YearRemodAdd', 'Fireplaces', 'LotArea', 'MasVnrArea'])
-    prediction = model.predict(input_data)
+# --- Model Training ---
+def train_models(X_train, y_train, X_val, y_val):
+    models = {
+        "Random Forest": RandomForestRegressor(random_state=42),
+        "XGBoost": XGBRegressor(random_state=42, verbosity=0)
+    }
+    
+    best_model = None
+    best_rmse = float('inf')
+    best_model_name = None
+
+    for model_name, model in models.items():
+        model.fit(X_train, y_train)
+        preds = model.predict(X_val)
+        rmse = np.sqrt(mean_squared_error(y_val, preds))
+        print(f"{model_name} RMSE: {rmse}")
+
+        if rmse < best_rmse:
+            best_rmse = rmse
+            best_model = model
+            best_model_name = model_name
+    
+    return best_model, best_model_name
+
+# --- Save Model ---
+def save_model(model, model_name):
+    model_path = f"{model_name}.pkl"
+    joblib.dump(model, model_path)
+    return model_path
+
+# --- Gradio Deployment ---
+def predict_price(*input_data):
+    df = pd.DataFrame([input_data], columns=X_train.columns)
+    prediction = best_model.predict(df)
     return {"Predicted House Price": prediction[0]}
 
-inputs = [
-    gr.Number(label='Overall Quality (1-10)'),
-    gr.Number(label='Above Ground Living Area (sqft)'),
-    gr.Number(label='Garage Cars'),
-    gr.Number(label='Total Basement Area (sqft)'),
-    gr.Number(label='Full Bathrooms'),
-    gr.Number(label='Year Built'),
-    gr.Number(label='Year Remodeled'),
-    gr.Number(label='Fireplaces'),
-    gr.Number(label='Lot Area (sqft)'),
-    gr.Number(label='Masonry Veneer Area (sqft)')
-]
-outputs = gr.JSON()
+# Load and preprocess data
+train, test = load_data()
+Data, Target, ntrain = preprocess_data(train, test)
+X_train, X_val, y_train, y_val = train_test_split(Data[:ntrain], Target, test_size=0.25, random_state=42)
 
+# Train and save model
+best_model, best_model_name = train_models(X_train, y_train, X_val, y_val)
+model_path = save_model(best_model, best_model_name)
+
+# --- Hugging Face Upload ---
+
+
+
+login(token="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")  # Replace with your token
+api = HfApi()
+# api.create_repo("Qafza_Task", repo_type="model")
+api.upload_file(
+    path_or_fileobj=model_path,
+    path_in_repo=f"models/{model_path}",
+    repo_id="EsrMash/Qafza_Task",
+    repo_type="model"
+)
+print(f"Model {best_model_name} uploaded to Hugging Face!")
+
+# --- Deploy with Gradio ---
+inputs = [gr.Number(label=col) for col in X_train.columns]
+outputs = gr.JSON()
 app = gr.Interface(fn=predict_price, inputs=inputs, outputs=outputs, title="House Price Prediction")
 app.launch(share=True)
 
 
-
-# # --- Deploy with Flask ---
-# # Step 4: Model Deployment
+# # --- Model Deployment ---
 # app = Flask(__name__)
 # @app.route('/predict', methods=['POST'])
 # def predict():
@@ -75,4 +116,3 @@ app.launch(share=True)
 
 # if __name__ == '__main__':
 #     app.run(host='0.0.0.0', port=8080)
-
